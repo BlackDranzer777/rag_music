@@ -139,6 +139,31 @@ class DocumentIngestor:
         )
         return vectorstore
 
+    def build_vectorstore_from_documents(
+        self,
+        documents: List[Document],
+        collection_name: str = "in_memory",
+    ) -> Chroma:
+        """Build an **ephemeral, in-memory** vector store from `Document`s.
+
+        Unlike :meth:`build_vectorstore`, this does not read folders or persist
+        to disk — it embeds the documents you pass in and keeps the collection
+        in memory only. This is used by the evaluator to build a fresh, tiny
+        knowledge base *per question* (e.g. one HotpotQA item's passages plus an
+        optional poison doc), which keeps the benchmark runs fast and isolated.
+
+        Passing `persist_directory=None` makes Chroma use an in-memory client,
+        so nothing is written to disk and collections never collide between
+        questions.
+        """
+        chunks = self.splitter.split_documents(documents)
+        return Chroma.from_documents(
+            documents=chunks,
+            embedding=self.embeddings,
+            collection_name=collection_name,
+            persist_directory=None,  # in-memory only
+        )
+
     def load_vectorstore(self, collection_name: str) -> Chroma:
         """Open an already-built collection without re-embedding anything."""
         return Chroma(

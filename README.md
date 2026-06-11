@@ -1,11 +1,20 @@
-# 🎵 RAG Misinformation Robustness Tester
+# 🛡️ RAG Misinformation Robustness Tester (P5: *In RAG We Trust?*)
 
-A small Retrieval-Augmented Generation (RAG) project for a university NLP
-course. It answers questions about music artists from a local knowledge base,
-then tests **how easily the system is fooled by injected fake ("poisoned")
-documents** — and whether a *verification prompt* makes it more robust.
+A Retrieval-Augmented Generation (RAG) project for a university NLP course. It
+answers questions / verifies claims from a knowledge base, then tests **how
+easily the system is fooled by injected fake ("poisoned") documents** — and
+whether a *verification prompt* makes it more robust.
 
-Everything runs on **free** tools:
+It evaluates three datasets behind one interface:
+
+| Dataset       | What it provides                          | Scoring        |
+| ------------- | ----------------------------------------- | -------------- |
+| **synthetic** | self-contained injected contradictions (offline, deterministic) | substring |
+| **HotpotQA**  | multi-hop QA with distractor paragraphs   | substring      |
+| **FEVER**     | fact-checking claims + gold evidence      | label (SUPPORTED/REFUTED/NEI) |
+
+HotpotQA and FEVER download from HuggingFace on first use; synthetic needs no
+network. Everything else runs on **free** tools:
 
 | Concern        | Choice                                                |
 | -------------- | ----------------------------------------------------- |
@@ -24,17 +33,23 @@ Everything runs on **free** tools:
 ```
 music-rag/
 ├── data/
-│   ├── real/          # real artist .txt files (1 example provided)
-│   └── poisoned/      # fake .txt files (1 example provided)
+│   ├── real/          # real .txt files for the Streamlit UI demo
+│   └── poisoned/      # fake .txt files for the Streamlit UI demo
 ├── src/
-│   ├── ingestion.py   # load .txt, embed locally, store in ChromaDB
+│   ├── ingestion.py   # embed + store in ChromaDB (folders OR in-memory docs)
 │   ├── retriever.py   # question -> top-k relevant chunks
-│   ├── pipeline.py    # question + chunks -> Groq LLM -> answer (+verify toggle)
-│   └── evaluator.py   # runs the 3 experiments, saves CSV
+│   ├── pipeline.py    # question/claim + chunks -> Groq LLM -> answer (+verify, +label mode)
+│   ├── evaluator.py   # runs experiments across datasets/models/top-k, saves CSV
+│   └── datasets_p5/   # the three dataset adapters behind one interface
+│       ├── base.py        # Task dataclass, DatasetAdapter ABC, shared scoring
+│       ├── poison.py      # controlled data-poisoning helpers
+│       ├── synthetic.py   # offline injected-contradiction generator
+│       ├── hotpotqa.py    # HotpotQA (distractor) loader
+│       └── fever.py       # FEVER gold-evidence loader (label scoring)
 ├── notebooks/
-│   └── demo.ipynb     # loads results CSV, draws simple charts
-├── results/           # experiment_results.csv lands here
-├── questions.py       # evaluation question set
+│   └── demo.ipynb     # loads results CSV, charts per dataset / model
+├── results/           # experiment_results.csv + experiment_summary.csv land here
+├── questions.py       # legacy question set (Streamlit UI demo only)
 ├── app.py             # Streamlit UI
 ├── .env               # GROQ_API_KEY=...
 ├── requirements.txt
@@ -97,8 +112,27 @@ Then in the browser:
 python -m src.evaluator
 ```
 
-This runs all three experiments over every question in `questions.py` and
-writes `results/experiment_results.csv`.
+This runs the three experiments over all three datasets (synthetic, HotpotQA,
+FEVER) and writes:
+
+- `results/experiment_results.csv` — one row per item, with `dataset`, `model`,
+  `top_k`, `is_correct`, `is_hallucinated`, `self_consistency`, …
+- `results/experiment_summary.csv` — accuracy / hallucination_rate /
+  self_consistency aggregated per (dataset, experiment, model, top_k).
+
+**First run downloads HotpotQA and FEVER from HuggingFace.** Defaults are small
+(10 items/dataset, one model, `top_k=4`, self-consistency off) so it finishes
+quickly. To scale up or sweep models / retrieval settings / self-consistency,
+edit the `Evaluator(...)` call at the bottom of `src/evaluator.py`, e.g.:
+
+```python
+Evaluator(
+    n_per_dataset=50,
+    models=["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+    top_ks=[2, 4, 8],
+    self_consistency_samples=5,   # 0 = off
+).run_all()
+```
 
 ### The charts
 
@@ -115,32 +149,41 @@ hallucination rate per experiment.
 | 2   | Real + Poisoned       | off                 | How badly fake docs fool the model     |
 | 3   | Real + Poisoned       | **on**              | Whether verification reduces the damage |
 
-**Metrics** (printed and saved per experiment):
+**Metrics** (printed and saved per dataset × experiment × model × top_k):
 
-- **accuracy** — fraction of questions where the *correct* answer appears in the
-  model's response.
-- **hallucination_rate** — fraction of poisoned-target questions where the model
-  repeated the *fake* answer. This is the core "did the misinformation win?"
-  number.
+- **accuracy** — fraction of items answered correctly (substring match for
+  QA datasets; correct SUPPORTED/REFUTED/NEI label for FEVER).
+- **hallucination_rate** — fraction of poisoned-target items where the model
+  repeated the *fake* answer / flipped verdict. The core "did the
+  misinformation win?" number.
+- **self_consistency** *(optional)* — mean agreement of resampled answers at a
+  non-zero temperature; how reliably the model gives the same answer.
 
 The expected story: hallucination_rate jumps from Exp 1 → Exp 2, then drops
-again in Exp 3 if verification helps.
+again in Exp 3 if verification helps. P5 also asks you to compare these across
+**models** and **retrieval settings** — hence the `models` / `top_ks` sweep.
 
 ---
 
 ## 🧠 How it works (quick tour for the report)
 
-1. **Ingestion** (`ingestion.py`) reads every `.txt`, splits it into overlapping
-   chunks, embeds each chunk locally with MiniLM, and stores the vectors in a
-   ChromaDB collection. Real vs poisoned origin is saved in each chunk's
-   metadata.
-2. **Retrieval** (`retriever.py`) embeds the question and returns the top-k most
+1. **Datasets** (`datasets_p5/`) each load into a common `Task` (question/claim,
+   real evidence passages, one fabricated poison passage, gold answer/label).
+   `poison.py` builds the poison: it flips yes/no, perturbs numbers, or swaps in
+   a plausible alternative entity.
+2. **Ingestion** (`ingestion.py`) builds a **per-item, in-memory** ChromaDB
+   collection from that item's passages (plus the poison doc in Exp 2/3),
+   embedding each chunk locally with MiniLM. Real vs poisoned origin is kept in
+   the metadata.
+3. **Retrieval** (`retriever.py`) embeds the question and returns the top-k most
    similar chunks by cosine similarity.
-3. **Generation** (`pipeline.py`) stuffs those chunks into a prompt and calls the
-   Groq Llama model. A `verification` flag swaps in a system prompt that tells
-   the model to check sources for contradictions before answering.
-4. **Evaluation** (`evaluator.py`) wires the above together, runs the three
-   experiments, scores the answers, and writes the CSV.
+4. **Generation** (`pipeline.py`) stuffs those chunks into a prompt and calls the
+   Groq Llama model. A `verification` flag swaps in a skeptical,
+   contradiction-checking system prompt; a `task_type` of `"label"` switches to
+   the FEVER SUPPORTED/REFUTED/NEI verdict prompt.
+5. **Evaluation** (`evaluator.py`) drives every dataset through the three
+   experiments across the model / top-k sweep, scores the answers, optionally
+   measures self-consistency, and writes the CSVs.
 
 ---
 
