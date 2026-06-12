@@ -33,13 +33,18 @@ network. Everything else runs on **free** tools:
 ```
 music-rag/
 ├── data/
-│   ├── real/          # real .txt files for the Streamlit UI demo
-│   └── poisoned/      # fake .txt files for the Streamlit UI demo
+│   ├── real/          # real .txt files for the Streamlit UI demo (artists)
+│   ├── poisoned/      # fake .txt files for the Streamlit UI demo (artists)
+│   └── <dataset>/     # exported benchmark items (synthetic/hotpotqa/fever)
+│       ├── real/      #   one .txt per item's real evidence
+│       ├── poisoned/  #   one .txt per item's poison passage
+│       └── index.csv  #   id, question, gold, poison_answer
 ├── src/
-│   ├── ingestion.py   # embed + store in ChromaDB (folders OR in-memory docs)
-│   ├── retriever.py   # question -> top-k relevant chunks
-│   ├── pipeline.py    # question/claim + chunks -> Groq LLM -> answer (+verify, +label mode)
-│   ├── evaluator.py   # runs experiments across datasets/models/top-k, saves CSV
+│   ├── ingestion.py        # embed + store in ChromaDB (folders OR in-memory docs)
+│   ├── retriever.py        # question -> top-k relevant chunks
+│   ├── pipeline.py         # question/claim + chunks -> Groq LLM -> answer (+verify, +label mode)
+│   ├── evaluator.py        # runs experiments across datasets/models/top-k, saves CSV
+│   ├── export_datasets.py  # dumps the datasets to data/<dataset>/ .txt files for the UI
 │   └── datasets_p5/   # the three dataset adapters behind one interface
 │       ├── base.py        # Task dataclass, DatasetAdapter ABC, shared scoring
 │       ├── poison.py      # controlled data-poisoning helpers
@@ -100,11 +105,29 @@ streamlit run app.py
 ```
 
 Then in the browser:
+- pick a **Data source** — the hand-written artist files, or one of the
+  exported benchmark datasets (synthetic / hotpotqa / fever),
 - toggle **"Include poisoned documents"** to add/remove the fake sources,
 - toggle **"Verification mode"** to enable the skeptical, contradiction-checking
   prompt,
 - ask a question and inspect both the answer and the retrieved sources
   (poisoned sources are flagged ☠️).
+
+The artist files work out of the box. To make the benchmark datasets selectable,
+export them to `.txt` first (see below).
+
+### Exporting the datasets for the UI
+
+```bash
+python -m src.export_datasets
+```
+
+This writes each dataset's items to `data/<dataset>/real/` and
+`data/<dataset>/poisoned/` (one `.txt` per item), plus a `data/<dataset>/index.csv`
+listing each `question`, its `gold` answer, and the `poison_answer`. The Streamlit
+app then reads those folders just like the artist files. **First run downloads
+HotpotQA and FEVER from HuggingFace** (synthetic is offline). The app and the
+exporter run independently — exporting does not run any experiments.
 
 ### The experiments (generates the CSV)
 
