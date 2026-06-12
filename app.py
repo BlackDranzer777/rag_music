@@ -9,6 +9,9 @@ Run with: streamlit run app.py
 
 from __future__ import annotations
 
+import csv
+from pathlib import Path
+
 import streamlit as st
 
 from src.ingestion import DocumentIngestor
@@ -40,6 +43,16 @@ def get_ingestor() -> DocumentIngestor:
 @st.cache_resource(show_spinner="Connecting to Groq...")
 def get_pipeline() -> RAGPipeline:
     return RAGPipeline()
+
+
+def source_task_type(real_dir: str) -> str:
+    """Read the dataset's index.csv to decide between QA and label (FEVER) mode."""
+    index = Path(real_dir).parent / "index.csv"
+    if index.exists():
+        with index.open(encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                return "label" if row.get("scoring") == "label" else "qa"
+    return "qa"
 
 
 @st.cache_resource(show_spinner="Building knowledge base...")
@@ -87,9 +100,16 @@ with st.sidebar:
         )
 
 
+task_type = source_task_type(real_dir)
+is_claim = task_type == "label"
+
 question = st.text_input(
-    "Ask a question:",
-    placeholder="e.g. In what year was the band Quantum Echo formed?",
+    "Enter a claim to verify:" if is_claim else "Ask a question:",
+    placeholder=(
+        "e.g. Syracuse, New York, had a population of 145,170..."
+        if is_claim
+        else "e.g. In what year was the band Quantum Echo formed?"
+    ),
 )
 
 if st.button("Get Answer", type="primary") and question.strip():
@@ -102,7 +122,9 @@ if st.button("Get Answer", type="primary") and question.strip():
 
     with st.spinner("Retrieving sources and asking the model..."):
         docs = retriever.retrieve(question)
-        answer = pipeline.answer(question, docs, verification=verification)
+        answer = pipeline.answer(
+            question, docs, verification=verification, task_type=task_type
+        )
 
     st.subheader("Answer")
     st.write(answer)
