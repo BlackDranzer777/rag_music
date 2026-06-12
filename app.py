@@ -1,18 +1,10 @@
-"""app.py
+"""Streamlit UI for the misinformation-robustness RAG demo.
 
-Streamlit UI for the misinformation-robustness RAG demo.
+Reads documents from disk and answers questions over them via Groq. Pick a data
+source in the sidebar: the hand-written artist files, or a benchmark dataset that
+was exported to .txt with `python -m src.export_datasets`.
 
-Features
---------
-* Sidebar controls to choose which documents are in the knowledge base
-  (real only, or real + poisoned) and to (re)build the vector store.
-* A toggle for "verification mode" (the skeptical / contradiction-checking
-  prompt).
-* A text box to ask a question; the answer is shown along with the retrieved
-  source chunks, clearly flagging any POISONED source that was retrieved.
-
-Run with:
-    streamlit run app.py
+Run with: streamlit run app.py
 """
 
 from __future__ import annotations
@@ -23,20 +15,23 @@ from src.ingestion import DocumentIngestor
 from src.pipeline import RAGPipeline
 from src.retriever import Retriever
 
-REAL_DIR = "data/real"
-POISONED_DIR = "data/poisoned"
+# Display name -> (real folder, poisoned folder). The benchmark folders are
+# produced by `python -m src.export_datasets`.
+SOURCES = {
+    "Artist files (data/)": ("data/real", "data/poisoned"),
+    "synthetic": ("data/synthetic/real", "data/synthetic/poisoned"),
+    "hotpotqa": ("data/hotpotqa/real", "data/hotpotqa/poisoned"),
+    "fever": ("data/fever/real", "data/fever/poisoned"),
+}
 
 st.set_page_config(page_title="RAG Misinformation Tester", page_icon="🎵")
 st.title("🎵 RAG Misinformation Robustness Tester")
 st.caption(
-    "Ask questions about music artists and watch how poisoned documents and "
-    "verification mode change the answer."
+    "Ask questions and watch how poisoned documents and verification mode "
+    "change the answer."
 )
 
 
-# --------------------------------------------------------------------------- #
-# Cached resources — built once and reused across reruns for speed.
-# --------------------------------------------------------------------------- #
 @st.cache_resource(show_spinner=False)
 def get_ingestor() -> DocumentIngestor:
     return DocumentIngestor()
@@ -48,31 +43,29 @@ def get_pipeline() -> RAGPipeline:
 
 
 @st.cache_resource(show_spinner="Building knowledge base...")
-def build_retriever(include_poisoned: bool, top_k: int) -> Retriever:
-    """Build (or rebuild) the vector store and wrap it in a Retriever.
-
-    The cache key includes `include_poisoned` and `top_k`, so flipping either
-    control transparently rebuilds the right knowledge base.
-    """
+def build_retriever(
+    real_dir: str, poisoned_dir: str, include_poisoned: bool, top_k: int
+) -> Retriever:
+    # Cache key includes the folders + controls, so any change rebuilds the KB.
     ingestor = get_ingestor()
-    source_dirs = [REAL_DIR]
-    collection = "ui_real_only"
+    source_dirs = [real_dir]
+    collection = real_dir.replace("/", "_")
     if include_poisoned:
-        source_dirs.append(POISONED_DIR)
-        collection = "ui_real_poisoned"
+        source_dirs.append(poisoned_dir)
+        collection += "_poisoned"
     vectorstore = ingestor.build_vectorstore(source_dirs, collection)
     return Retriever(vectorstore, top_k=top_k)
 
 
-# --------------------------------------------------------------------------- #
-# Sidebar controls
-# --------------------------------------------------------------------------- #
 with st.sidebar:
     st.header("⚙️ Settings")
+    source_name = st.selectbox("Data source", list(SOURCES.keys()))
+    real_dir, poisoned_dir = SOURCES[source_name]
+
     include_poisoned = st.checkbox(
         "Include poisoned documents",
         value=True,
-        help="Add the fake docs in data/poisoned to the knowledge base.",
+        help="Add the fake / poison files to the knowledge base.",
     )
     verification = st.toggle(
         "Verification mode",
@@ -87,22 +80,23 @@ with st.sidebar:
         "**Knowledge base:** "
         + ("Real + Poisoned" if include_poisoned else "Real only")
     )
+    if source_name != "Artist files (data/)":
+        st.caption(
+            "Benchmark folders come from `python -m src.export_datasets`. "
+            f"See `data/{source_name}/index.csv` for the questions to ask."
+        )
 
 
-# --------------------------------------------------------------------------- #
-# Main interaction
-# --------------------------------------------------------------------------- #
 question = st.text_input(
-    "Ask a question about a music artist:",
+    "Ask a question:",
     placeholder="e.g. In what year was the band Quantum Echo formed?",
 )
 
 if st.button("Get Answer", type="primary") and question.strip():
     try:
-        retriever = build_retriever(include_poisoned, top_k)
+        retriever = build_retriever(real_dir, poisoned_dir, include_poisoned, top_k)
         pipeline = get_pipeline()
     except ValueError as exc:
-        # Most common cause: missing GROQ_API_KEY in .env
         st.error(str(exc))
         st.stop()
 
@@ -115,7 +109,10 @@ if st.button("Get Answer", type="primary") and question.strip():
 
     st.subheader("Retrieved sources")
     if not docs:
-        st.info("No documents retrieved. Have you added files to data/ ?")
+        st.info(
+            "No documents retrieved. If you picked a benchmark dataset, run "
+            "`python -m src.export_datasets` first."
+        )
     for i, doc in enumerate(docs, start=1):
         is_poisoned = doc.metadata.get("is_poisoned")
         source = doc.metadata.get("source", "unknown")

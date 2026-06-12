@@ -1,18 +1,8 @@
-"""synthetic.py
+"""Offline synthetic dataset: self-contained facts with injected contradictions.
 
-Synthetic dataset (P5 Dataset bullet 3: *deliberately injected false /
-contradictory passages*).
-
-This adapter needs no download and is fully deterministic, so the offline path
-always works and the experiment story is clean: every item has exactly one real
-passage and one contradicting poison passage, with short, distinctive answers
-that substring-match reliably.
-
-Each fact is an (entity, attribute, value) triple turned into:
-
-* a question        — "What is the {attribute} of {entity}?"
-* a real passage    — states the true value.
-* a poison passage  — states a different, false value.
+Each fact is an (entity, attribute, value) triple turned into a question, a real
+passage stating the true value, and a poison passage stating a false one. Values
+are short and distinctive so they substring-match cleanly.
 """
 
 from __future__ import annotations
@@ -22,9 +12,6 @@ from typing import List
 from src.datasets_p5.base import DatasetAdapter, Task
 from src.datasets_p5.poison import fake_answer, make_poison_passage
 
-# A pool of self-contained facts. Values are short and distinctive (a year, a
-# city, a number) so they substring-match cleanly in a free-form answer.
-# (entity, attribute, value)
 _FACTS = [
     ("the band Quantum Echo", "formation year", "2011"),
     ("the artist Luna Vega", "home city", "Lisbon"),
@@ -50,14 +37,10 @@ _FACTS = [
 
 
 class SyntheticAdapter(DatasetAdapter):
-    """Generates self-contained, poisoned (entity, attribute, value) facts."""
-
     name = "synthetic"
 
     def load(self, n: int) -> List[Task]:
         facts = _FACTS[: max(0, n)]
-        # The pool of all true values lets the poison swap in a plausible
-        # alternative for non-numeric answers.
         value_pool = [v for _, _, v in _FACTS]
 
         tasks: List[Task] = []

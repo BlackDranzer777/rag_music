@@ -1,0 +1,11 @@
+id,question,gold,poison_answer,scoring
+synthetic-0,What is the formation year of the band Quantum Echo?,2011,2008,substring
+synthetic-1,What is the home city of the artist Luna Vega?,Lisbon,Zagreb,substring
+synthetic-2,What is the opening year of the Aurora Bridge?,1932,1935,substring
+synthetic-3,What is the publication year of the novel Glass Harbor?,1987,1990,substring
+synthetic-4,What is the birth city of the painter Mira Kovac?,Zagreb,Lisbon,substring
+synthetic-5,What is the launch year of the satellite Helios-4?,2009,2004,substring
+synthetic-6,What is the height in metres of the Verde Tower?,412,409,substring
+synthetic-7,What is the title year of the chess champion Ivan Petrov?,1996,2003,substring
+synthetic-8,What is the release year of the film Silent Cartography?,2003,2006,substring
+synthetic-9,What is the length in kilometres of the river Calden?,318,325,substring

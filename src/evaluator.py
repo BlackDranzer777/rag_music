@@ -1,31 +1,13 @@
-"""evaluator.py
+"""Run the misinformation-robustness experiments and write results to results/.
 
-Runs the P5 misinformation-robustness experiments across the three datasets
-(synthetic, HotpotQA, FEVER) and writes per-question results plus an aggregate
-summary to ``results/``.
+For each dataset (synthetic, HotpotQA, FEVER) we run three experiments:
+    Exp 1  baseline          - real evidence only.
+    Exp 2  poisoned          - real + a fabricated poison passage, no verification.
+    Exp 3  poisoned + verify  - real + poison, with the verification prompt.
 
-For every dataset we run three experiments — the same story as the original
-demo, now applied to real benchmarks:
-
-* Exp 1  "baseline"          : knowledge base = the item's REAL evidence only.
-* Exp 2  "poisoned"          : REAL + a fabricated POISON passage, no verification.
-* Exp 3  "poisoned + verify" : REAL + POISON, with the skeptical verification prompt.
-
-Each item gets its **own** tiny, in-memory knowledge base (its evidence
-passages, plus the poison doc in Exp 2/3), so retrieval stays relevant and the
-runs are isolated and fast.
-
-P5 also asks for the metrics to be compared **across models and retrieval
-settings**, and for a **self-consistency** measure, so the evaluator sweeps a
-list of models and ``top_k`` values and can resample answers to estimate
-agreement.
-
-Headline metrics per (dataset, experiment, model, top_k):
-
-* accuracy            — fraction of items answered correctly.
-* hallucination_rate  — fraction of *poisoned-target* items where the model
-                        repeated the fake answer/label (did the poison win?).
-* self_consistency    — mean agreement of resampled answers (optional pass).
+Each item gets its own in-memory knowledge base, so retrieval stays relevant and
+the runs are isolated. The evaluator can sweep models and top_k values, and
+optionally measure self-consistency.
 """
 
 from __future__ import annotations
@@ -45,34 +27,24 @@ from src.datasets_p5.base import DatasetAdapter, Task
 from src.ingestion import DocumentIngestor
 from src.pipeline import RAGPipeline
 
-# Where results are written.
 RESULTS_PATH = "results/experiment_results.csv"
 SUMMARY_PATH = "results/experiment_summary.csv"
 
-# Default sweep — kept small so a first run finishes quickly. Override in
-# __main__ or when constructing the Evaluator.
 DEFAULT_MODELS = ["llama-3.3-70b-versatile"]
 DEFAULT_TOP_KS = [4]
 
 
 def _fresh_collection_name() -> str:
-    """A unique, always-valid Chroma collection name for an ephemeral KB.
-
-    Each per-item knowledge base is in-memory and short-lived, so the name only
-    needs to be unique and satisfy Chroma's rules (alphanumeric ends, 3-512
-    chars from [a-zA-Z0-9._-]). A UUID guarantees both.
-    """
+    # UUID keeps each ephemeral collection name unique and Chroma-valid.
     return f"c{uuid.uuid4().hex}"
 
 
 @dataclass
 class ExperimentConfig:
-    """Describes one experiment variant (independent of dataset)."""
-
-    name: str            # short id, e.g. "exp2_poisoned"
-    label: str           # human-friendly description
-    include_poison: bool # add the poison doc to the knowledge base?
-    verification: bool   # use the skeptical verification prompt?
+    name: str
+    label: str
+    include_poison: bool
+    verification: bool
 
 
 EXPERIMENTS = [
@@ -99,26 +71,6 @@ EXPERIMENTS = [
 
 @dataclass
 class Evaluator:
-    """Drives the dataset adapters through every experiment and scores answers.
-
-    Parameters
-    ----------
-    adapters:
-        Dataset adapters to evaluate (default: all three).
-    n_per_dataset:
-        How many items to load from each dataset.
-    models:
-        Groq model ids to compare.
-    top_ks:
-        Retrieval depths to compare.
-    self_consistency_samples:
-        If > 0, run an extra pass that resamples each answer this many times at
-        ``sc_temperature`` and records the mean agreement. 0 disables it.
-    sc_temperature / self_consistency_cap:
-        Sampling temperature and the max items per group used for the
-        self-consistency pass (capped to bound cost).
-    """
-
     adapters: List[DatasetAdapter] = field(
         default_factory=lambda: [cls() for cls in ADAPTERS.values()]
     )
@@ -130,12 +82,8 @@ class Evaluator:
     self_consistency_cap: int = 10
 
     ingestor: DocumentIngestor = field(default_factory=DocumentIngestor)
-    # Cache of pipelines keyed by (model_name, temperature).
     _pipelines: Dict = field(default_factory=dict, init=False, repr=False)
 
-    # ------------------------------------------------------------------ #
-    # Pipeline / knowledge-base helpers
-    # ------------------------------------------------------------------ #
     def _pipeline(self, model: str, temperature: float = 0.0) -> RAGPipeline:
         key = (model, temperature)
         if key not in self._pipelines:
@@ -144,7 +92,6 @@ class Evaluator:
 
     @staticmethod
     def _task_documents(task: Task, include_poison: bool) -> List[Document]:
-        """Build the LangChain documents that form this item's knowledge base."""
         docs = [
             Document(
                 page_content=text,
@@ -162,18 +109,12 @@ class Evaluator:
         return docs
 
     def _retrieve(self, task: Task, cfg: ExperimentConfig, top_k: int):
-        """Build the per-item KB and return the top_k retrieved documents."""
         docs = self._task_documents(task, cfg.include_poison)
         vectorstore = self.ingestor.build_vectorstore_from_documents(
             docs, collection_name=_fresh_collection_name()
         )
-        retrieved = vectorstore.similarity_search(task.question, k=top_k)
-        # In-memory collections are GC'd with the vectorstore; nothing persists.
-        return retrieved
+        return vectorstore.similarity_search(task.question, k=top_k)
 
-    # ------------------------------------------------------------------ #
-    # Running one (dataset, experiment, model, top_k) combination
-    # ------------------------------------------------------------------ #
     def _run_combo(
         self,
         adapter: DatasetAdapter,
@@ -214,7 +155,7 @@ class Evaluator:
                     "is_correct": scores["is_correct"],
                     "is_hallucinated": scores["is_hallucinated"],
                     "poison_doc_retrieved": poison_retrieved,
-                    "self_consistency": "",  # filled by the optional SC pass
+                    "self_consistency": "",
                 }
             )
 
@@ -225,9 +166,6 @@ class Evaluator:
 
         return rows
 
-    # ------------------------------------------------------------------ #
-    # Optional self-consistency pass
-    # ------------------------------------------------------------------ #
     def _self_consistency(
         self,
         adapter: DatasetAdapter,
@@ -236,13 +174,7 @@ class Evaluator:
         model: str,
         top_k: int,
     ) -> float:
-        """Mean agreement of resampled answers for one group of items.
-
-        For each (capped) item we ask the model ``self_consistency_samples``
-        times at a non-zero temperature and compute the fraction of answers
-        equal to the most common one. Averaged over items, this is a simple
-        self-consistency score in [0, 1] (1.0 = perfectly stable).
-        """
+        """Resample each item a few times and return mean agreement in [0, 1]."""
         pipeline = self._pipeline(model, temperature=self.sc_temperature)
         sample_tasks = tasks[: self.self_consistency_cap]
         if not sample_tasks:
@@ -269,9 +201,6 @@ class Evaluator:
 
         return round(sum(per_item) / len(per_item), 3)
 
-    # ------------------------------------------------------------------ #
-    # Top-level driver
-    # ------------------------------------------------------------------ #
     def run_all(
         self,
         results_path: str = RESULTS_PATH,
@@ -293,7 +222,6 @@ class Evaluator:
                     for cfg in EXPERIMENTS:
                         rows = self._run_combo(adapter, tasks, cfg, model, top_k)
 
-                        sc_value = ""
                         if self.self_consistency_samples > 0:
                             sc_value = self._self_consistency(
                                 adapter, tasks, cfg, model, top_k
@@ -311,9 +239,6 @@ class Evaluator:
         print(f"Aggregate summary    -> {summary_path}")
         return all_rows
 
-    # ------------------------------------------------------------------ #
-    # Aggregation / output
-    # ------------------------------------------------------------------ #
     @staticmethod
     def summarize(rows: List[Dict]) -> List[Dict]:
         """Accuracy + hallucination rate per (dataset, experiment, model, top_k)."""
@@ -377,16 +302,10 @@ class Evaluator:
 
 
 def _normalise_answer(answer: str) -> str:
-    """Collapse an answer to a comparable key for self-consistency counting."""
     return re.sub(r"\s+", " ", (answer or "").strip().lower())[:200]
 
 
 if __name__ == "__main__":
-    # Quick start:  python -m src.evaluator
-    #
-    # Defaults are intentionally small (one model, top_k=4, 10 items/dataset,
-    # self-consistency off) so the first run finishes fast. Scale these up once
-    # a small run looks correct.
     Evaluator(
         n_per_dataset=10,
         models=DEFAULT_MODELS,
